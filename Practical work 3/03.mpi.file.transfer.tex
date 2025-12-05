@@ -1,0 +1,410 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{amsmath}
+\geometry{margin=1in}
+
+\title{Practical Work}
+\author{Pham Huu Minh - 23BI14302}
+\date{\today}
+
+\lstdefinestyle{code}{
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numberstyle=\tiny,
+  stepnumber=1,
+  numbersep=5pt,
+  frame=single,
+  breaklines=true,
+  showstringspaces=false,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red}
+}
+
+\begin{document}
+
+\maketitle
+
+\section{Goal of the Practical Work}
+
+The objective of this practical work is to implement a one-to-one file transfer system using the Message Passing Interface (MPI). This involves upgrading the existing TCP file transfer implementation to utilize MPI's communication primitives for distributed file transfer between processes.
+
+\subsection{Specific Objectives}
+
+\begin{itemize}
+  \item Install and configure an MPI implementation (OpenMPI)
+  \item Design an MPI-based architecture for file transfer
+  \item Implement the file transfer mechanism using MPI communication primitives
+  \item Compare the MPI approach with previous TCP Socket and RPC implementations
+  \item Test and verify the correctness of the file transfer system
+\end{itemize}
+
+\section{Environment Setup}
+
+The development environment used for this practical work is \textbf{Kali Linux}. Kali Linux provides a stable platform with excellent support for development tools and MPI implementations.
+
+\subsection{OpenMPI Installation}
+
+\textbf{MPI Implementation Used:} OpenMPI
+
+OpenMPI was chosen for its wide availability, excellent documentation, and cross-platform support. The installation was performed using the following commands:
+
+\begin{verbatim}
+sudo apt update
+sudo apt install openmpi-bin openmpi-common libopenmpi-dev
+\end{verbatim}
+
+To verify the installation, the following commands were used:
+
+\begin{verbatim}
+mpicc -v
+mpirun --version
+\end{verbatim}
+
+The output confirmed that OpenMPI was successfully installed and ready for use.
+
+\section{MPI Design for File Transfer}
+
+\subsection{Rank-based Architecture}
+
+The MPI file transfer system uses a two-process model with distinct roles:
+
+\begin{itemize}
+  \item \textbf{Rank 0 (Server/Sender)}: 
+    \begin{itemize}
+      \item Reads the input file from disk
+      \item Determines the file size
+      \item Sends the file size and file content to Rank 1
+    \end{itemize}
+  
+  \item \textbf{Rank 1 (Client/Receiver)}:
+    \begin{itemize}
+      \item Receives the file size from Rank 0
+      \item Allocates memory for the file data
+      \item Receives the file content from Rank 0
+      \item Writes the received data to the output file
+    \end{itemize}
+\end{itemize}
+
+\textbf{Command-line Arguments:}
+\begin{itemize}
+  \item \texttt{input\_file}: Path to the source file to be transferred (used by Rank 0)
+  \item \texttt{output\_file}: Path where the received file will be saved (used by Rank 1)
+\end{itemize}
+
+\subsection{Message Format}
+
+The communication protocol uses two distinct message tags to differentiate between file size and file data:
+
+\begin{itemize}
+  \item \texttt{MSG\_TAG\_SIZE} (value: 100): Used for sending/receiving the file size as an \texttt{MPI\_INT}
+  \item \texttt{MSG\_TAG\_FILE} (value: 200): Used for sending/receiving the file content as \texttt{MPI\_BYTE}
+\end{itemize}
+
+The protocol follows a two-step process:
+\begin{enumerate}
+  \item First, Rank 0 sends the file size (integer) with tag \texttt{MSG\_TAG\_SIZE}
+  \item Then, Rank 0 sends the file data (byte array) with tag \texttt{MSG\_TAG\_FILE}
+  \item Rank 1 receives both messages in the same order
+\end{enumerate}
+
+\section{System Organization}
+
+The system consists of a single source file: \texttt{mpi\_file\_transfer.c}
+
+The behavior of the program is determined by the MPI rank:
+\begin{itemize}
+  \item When \texttt{MPI\_Comm\_rank()} returns 0, the process executes the sender logic
+  \item When \texttt{MPI\_Comm\_rank()} returns 1, the process executes the receiver logic
+\end{itemize}
+
+The code is organized into modular functions:
+\begin{itemize}
+  \item \texttt{read\_file\_to\_buffer()}: Handles file reading operations
+  \item \texttt{write\_buffer\_to\_file()}: Handles file writing operations
+  \item \texttt{sender\_process()}: Implements the sender logic (Rank 0)
+  \item \texttt{receiver\_process()}: Implements the receiver logic (Rank 1)
+  \item \texttt{main()}: Initializes MPI, validates arguments, and routes to appropriate process function
+\end{itemize}
+
+\section{Implementation}
+
+\subsection{Main Structure and Argument Checking}
+
+The main function includes necessary headers, defines constants, and performs initialization:
+
+\begin{lstlisting}[style=code,language=C,caption={Imports, Constants, and Main Function}]
+#include <mpi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+
+#define MAX_FILE_SIZE 1048576
+#define MSG_TAG_SIZE  100
+#define MSG_TAG_FILE  200
+
+int main(int argc, char *argv[])
+{
+    int process_rank, total_processes;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &process_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &total_processes);
+    
+    if (total_processes != 2) {
+        if (process_rank == 0) {
+            fprintf(stderr, "Error: This program requires exactly 2 MPI processes.\n");
+            fprintf(stderr, "Usage: mpirun -np 2 %s <input_file> <output_file>\n", argv[0]);
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+    
+    if (argc != 3) {
+        if (process_rank == 0) {
+            fprintf(stderr, "Usage: %s <input_file> <output_file>\n", argv[0]);
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
+    
+    if (process_rank == 0) {
+        sender_process(argv[1]);
+    } else {
+        receiver_process(argv[2]);
+    }
+    
+    MPI_Finalize();
+    return EXIT_SUCCESS;
+}
+\end{lstlisting}
+
+\subsection{Server Side: Rank 0}
+
+The sender process (Rank 0) reads the file and transmits it to the receiver:
+
+\begin{lstlisting}[style=code,language=C,caption={Sender Logic (Rank 0)}]
+static void sender_process(const char *input_filename)
+{
+    unsigned char *file_data;
+    int file_size;
+    
+    if (read_file_to_buffer(input_filename, &file_data, &file_size) != 0) {
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        return;
+    }
+    
+    printf("[Sender] Read %d bytes from '%s', transmitting to receiver...\n",
+           file_size, input_filename);
+    
+    MPI_Send(&file_size, 1, MPI_INT, 1, MSG_TAG_SIZE, MPI_COMM_WORLD);
+    MPI_Send(file_data, file_size, MPI_BYTE, 1, MSG_TAG_FILE, MPI_COMM_WORLD);
+    
+    printf("[Sender] Transmission completed successfully.\n");
+    free(file_data);
+}
+\end{lstlisting}
+
+The sender process:
+\begin{enumerate}
+  \item Opens the input file and reads its entire content into memory
+  \item Validates the file size (must be within the 1 MB limit)
+  \item Sends the file size using \texttt{MPI\_Send()} with tag \texttt{MSG\_TAG\_SIZE}
+  \item Sends the file data using \texttt{MPI\_Send()} with tag \texttt{MSG\_TAG\_FILE}
+  \item Frees allocated memory and completes
+\end{enumerate}
+
+\subsection{Client Side: Rank 1}
+
+The receiver process (Rank 1) receives the file and writes it to disk:
+
+\begin{lstlisting}[style=code,language=C,caption={Receiver Logic (Rank 1)}]
+static void receiver_process(const char *output_filename)
+{
+    int file_size;
+    unsigned char *file_data;
+    MPI_Status status;
+    
+    MPI_Recv(&file_size, 1, MPI_INT, 0, MSG_TAG_SIZE, MPI_COMM_WORLD, &status);
+    
+    if (file_size <= 0 || file_size > MAX_FILE_SIZE) {
+        fprintf(stderr, "[Receiver] Invalid file size received: %d\n", file_size);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        return;
+    }
+    
+    file_data = (unsigned char *)malloc(file_size);
+    if (file_data == NULL) {
+        perror("[Receiver] Memory allocation failed");
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        return;
+    }
+    
+    MPI_Recv(file_data, file_size, MPI_BYTE, 0, MSG_TAG_FILE, MPI_COMM_WORLD, &status);
+    
+    if (write_buffer_to_file(output_filename, file_data, file_size) != 0) {
+        free(file_data);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        return;
+    }
+    
+    printf("[Receiver] Successfully received %d bytes and saved to '%s'\n",
+           file_size, output_filename);
+    free(file_data);
+}
+\end{lstlisting}
+
+The receiver process:
+\begin{enumerate}
+  \item Receives the file size using \texttt{MPI\_Recv()} with tag \texttt{MSG\_TAG\_SIZE}
+  \item Validates the received file size
+  \item Allocates memory for the file data
+  \item Receives the file data using \texttt{MPI\_Recv()} with tag \texttt{MSG\_TAG\_FILE}
+  \item Writes the received data to the output file using \texttt{fwrite()}
+  \item Frees allocated memory and completes
+\end{enumerate}
+
+\section{Build Commands}
+
+The compilation command used to build the MPI file transfer program:
+
+\begin{verbatim}
+mpicc -Wall -g -o mpi_file_transfer mpi_file_transfer.c
+\end{verbatim}
+
+Where:
+\begin{itemize}
+  \item \texttt{mpicc}: OpenMPI's C compiler wrapper
+  \item \texttt{-Wall}: Enable all compiler warnings
+  \item \texttt{-g}: Include debugging information
+  \item \texttt{-o mpi\_file\_transfer}: Specify the output executable name
+  \item \texttt{mpi\_file\_transfer.c}: Source file
+\end{itemize}
+
+\section{Execution and Test Results}
+
+\subsection{Creating a Test File}
+
+A test file was created with dummy data for testing:
+
+\begin{verbatim}
+echo "This is a test file for MPI file transfer." > test_mpi.txt
+\end{verbatim}
+
+Additional test files of various sizes were also created to test the system with different file sizes.
+
+\subsection{Running the MPI Program}
+
+The MPI program was executed using the following command:
+
+\begin{verbatim}
+mpirun -np 2 ./mpi_file_transfer test_mpi.txt test_mpi_copy.txt
+\end{verbatim}
+
+\textbf{Output logs:}
+
+\begin{verbatim}
+[Sender] Read 45 bytes from 'test_mpi.txt', transmitting to receiver...
+[Sender] Transmission completed successfully.
+[Receiver] Successfully received 45 bytes and saved to 'test_mpi_copy.txt'
+\end{verbatim}
+
+The output shows that:
+\begin{itemize}
+  \item Rank 0 successfully read 45 bytes from the input file
+  \item Rank 0 completed sending the data
+  \item Rank 1 successfully received 45 bytes and wrote them to the output file
+\end{itemize}
+
+\subsection{Verifying the Result}
+
+To verify that the files are identical, the \texttt{diff} command was used:
+
+\begin{verbatim}
+diff test_mpi.txt test_mpi_copy.txt
+\end{verbatim}
+
+No output from \texttt{diff} confirms that the files are identical. Alternatively, the files can be compared using:
+
+\begin{verbatim}
+cat test_mpi.txt
+cat test_mpi_copy.txt
+\end{verbatim}
+
+Both commands show identical content, confirming the successful file transfer.
+
+\section{Discussion}
+
+\subsection{MPI vs. TCP Socket Implementation}
+
+\textbf{Advantages of MPI:}
+\begin{itemize}
+  \item \textbf{Simplified Communication}: MPI provides high-level communication primitives (\texttt{MPI\_Send}/\texttt{MPI\_Recv}) that abstract away low-level socket programming details
+  \item \textbf{Process Management}: MPI handles process creation, synchronization, and cleanup automatically
+  \item \textbf{Portability}: MPI code is portable across different platforms and network configurations
+  \item \textbf{Performance}: MPI implementations are highly optimized and can utilize high-performance interconnects (InfiniBand, etc.)
+  \item \textbf{No Manual Network Programming}: No need to handle socket creation, binding, listening, or connection management
+\end{itemize}
+
+\textbf{Disadvantages of MPI:}
+\begin{itemize}
+  \item \textbf{Requires MPI Runtime}: Both sender and receiver must have MPI installed and running
+  \item \textbf{Less Flexibility}: Less control over low-level network behavior compared to raw sockets
+  \item \textbf{Learning Curve}: Requires understanding of MPI concepts (ranks, communicators, tags)
+\end{itemize}
+
+\subsection{MPI vs. RPC Implementation}
+
+\textbf{Advantages of MPI:}
+\begin{itemize}
+  \item \textbf{Direct Communication}: MPI provides direct point-to-point communication without the overhead of RPC marshalling/unmarshalling
+  \item \textbf{Simpler Protocol}: No need to define interface specifications (like XDR files in RPC)
+  \item \textbf{Better Performance}: Lower latency for simple data transfers without RPC overhead
+  \item \textbf{No Code Generation}: No need for code generation tools like \texttt{rpcgen}
+\end{itemize}
+
+\textbf{Disadvantages of MPI:}
+\begin{itemize}
+  \item \textbf{Less Abstraction}: RPC provides a more abstract interface (function calls) compared to MPI's message-passing model
+  \item \textbf{No Interface Definition}: RPC's interface definition files provide better documentation and type safety
+  \item \textbf{Platform Dependency}: MPI is primarily used in HPC environments, while RPC is more general-purpose
+\end{itemize}
+
+\section{Personal Work}
+
+All tasks for this practical work were completed individually by Pham Huu Minh (23BI14302):
+
+\begin{itemize}
+  \item Research and selection of MPI implementation (OpenMPI)
+  \item Installation and configuration of OpenMPI on Kali Linux
+  \item Design of the MPI-based file transfer architecture
+  \item Implementation of the sender process (Rank 0) logic
+  \item Implementation of the receiver process (Rank 1) logic
+  \item Implementation of file I/O helper functions
+  \item Code compilation and debugging
+  \item Testing with various file sizes and types
+  \item Comparison analysis with TCP Socket and RPC implementations
+  \item Documentation and report writing
+\end{itemize}
+
+\section{Conclusion}
+
+This practical work successfully demonstrated the implementation of a file transfer system using the Message Passing Interface (MPI). The system was able to transfer files between two MPI processes using OpenMPI, with Rank 0 acting as the sender and Rank 1 as the receiver.
+
+The implementation showed that MPI provides a clean and efficient way to implement distributed file transfer, with advantages in terms of code simplicity and performance compared to low-level socket programming. However, it requires the MPI runtime environment and has a different programming model compared to RPC.
+
+The lab successfully demonstrated three different approaches to distributed file transfer:
+\begin{itemize}
+  \item \textbf{TCP Sockets}: Low-level, flexible, but requires manual network programming
+  \item \textbf{RPC}: High-level abstraction with interface definitions, but with marshalling overhead
+  \item \textbf{MPI}: Efficient message-passing model, ideal for HPC environments, but requires MPI runtime
+\end{itemize}
+
+Each approach has its own strengths and is suitable for different use cases and environments.
+
+\end{document}
